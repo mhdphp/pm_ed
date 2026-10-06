@@ -2,6 +2,31 @@
 
 Scope: the whole repository at commit `dc78685` - backend (`backend/app`, tests), frontend (`frontend/src`, configs, Playwright spec), Dockerfile, scripts and docs. Documentation drift is already covered in `docs/PROJECT_REVIEW.md` and is only summarised here (section 5).
 
+## Remediation status (2026-10-06)
+
+All High and Medium items (1.1-2.7) are fixed; Low items (section 3 and 4) are not yet addressed.
+
+| # | Fix | Verified by |
+|---|---|---|
+| 1.1 | `routes/static.py` resolves the path and rejects anything outside the static dir; `api/*` misses return 404 | Unit tests `test_static_fallback_blocks_path_traversal`, `test_static_fallback_404_for_unknown_api_path`; live container returns 404 for `/..%2F..%2Fbackend%2Fdata%2Fpm.db` and `/..%2F..%2F..%2Fetc%2Fpasswd` |
+| 1.2 | Start scripts, CLAUDE.md and README use the `pm-data` volume | Card created, container removed and re-run, card still present |
+| 1.3 | Loading view only shown before the first board load | Unit test: chat draft survives adding a card |
+| 2.1 | Column title saved on blur/Enter; empty title reverts | Unit tests (one call on blur, none for empty); E2E rename persists after reload |
+| 2.2 | Non-numeric ids skipped; `ValidationError` and non-JSON bodies return 502 | Unit tests for each case in the table in 2.2 |
+| 2.3 | Edit button on each card with inline title/details form | Unit test; E2E edit persists after reload |
+| 2.4 | `handleDragEnd` computes the move from props and calls `onMoveCard` outside the updater | E2E drag test |
+| 2.5 | `response_format` with the `StructuredChatOutput` JSON schema (`strict: false`) | Unit test asserts the payload; live check blocked (see above) |
+| 2.6 | Shared helpers in `database.py` used by both `routes/board.py` and `apply_actions()` | Full backend suite |
+| 2.7 | `node:24-slim`, `@types/node` ^24 | Docker build |
+
+Additional bugs found and fixed while remediating:
+- Moving a card to a later position within the same column landed one slot short (first of four moved to index 3 ended at index 2). Fixed in the shared `move_card` helper; covered by `test_reorder_card_within_column`.
+- The board error banner never appeared: `refreshBoard()` cleared `boardError` immediately after each handler set it. Errors now stay visible until the next action.
+- At the default 1280px viewport the card action button rendered outside the 154px-wide column (the old "Remove" button was already clipped). Actions now sit below the card text and long words wrap.
+- While a card is being edited, dnd-kit's `aria-disabled` on the card element made the form inputs read as disabled to assistive tech. Drag attributes are now omitted during editing.
+
+Test results after remediation: backend 34 passed (live OpenRouter test fails with 402 from OpenRouter, unrelated to code), coverage 95%; frontend unit 16 passed; Playwright 5 passed against the rebuilt container, including a second run on persisted data; lint clean.
+
 ## How findings were verified
 
 - Backend unit tests: 20 passed, 3 skipped (live tests need `PM_BASE_URL`). Coverage 89%.
@@ -54,17 +79,17 @@ Impact:
 The same route also returns `index.html` with status 200 for unknown API paths (`GET /api/nonexistent -> 200 INDEX`), which hides client mistakes.
 
 Actions
-- [ ] Replace the hand-written catch-all with `app.mount("/", StaticFiles(directory=STATIC_DIR, html=True))` registered after `api_router`. Starlette's `StaticFiles` rejects traversal and serves the exported `404.html` for misses. This also removes most of `routes/static.py` and the separate `/_next` and `/static` mounts in `main.py`.
-- [ ] If the catch-all is kept instead, resolve the path and require `requested_path.resolve().is_relative_to(STATIC_DIR.resolve())`, and return 404 for paths under `api/`.
-- [ ] Add a unit test asserting `GET /..%2F<file>` does not return the file.
+- [ ] (Not taken; the containment check below was used instead, keeping the existing route and tests.) Replace the hand-written catch-all with `app.mount("/", StaticFiles(directory=STATIC_DIR, html=True))` registered after `api_router`. Starlette's `StaticFiles` rejects traversal and serves the exported `404.html` for misses. This also removes most of `routes/static.py` and the separate `/_next` and `/static` mounts in `main.py`.
+- [x] If the catch-all is kept instead, resolve the path and require `requested_path.resolve().is_relative_to(STATIC_DIR.resolve())`, and return 404 for paths under `api/`.
+- [x] Add a unit test asserting `GET /..%2F<file>` does not return the file.
 
 ### 1.2 Database is wiped on every start (Confirmed by code)
 
 `Dockerfile:31` creates `/app/backend/data` inside the image, and every start script (`scripts/start-*.sh:11-13`, `start-windows.ps1:9-11`) runs `docker rm -f` followed by `docker run` with no volume. Each start therefore begins with an empty database and the seed board. Data only survives page reloads within one container's lifetime, which undercuts the Part 7 goal "Kanban data persists across reloads".
 
 Actions
-- [ ] Add `-v pm-data:/app/backend/data` to the `docker run` line in all three start scripts and in the detached-run command in `CLAUDE.md`. A named volume is initialised from the image directory, so `appuser` ownership carries over.
-- [ ] Mention the volume (and how to reset it: `docker volume rm pm-data`) in README.
+- [x] Add `-v pm-data:/app/backend/data` to the `docker run` line in all three start scripts and in the detached-run command in `CLAUDE.md`. A named volume is initialised from the image directory, so `appuser` ownership carries over.
+- [x] Mention the volume (and how to reset it: `docker volume rm pm-data`) in README.
 
 ### 1.3 Board unmounts on every mutation (Confirmed by code)
 
@@ -73,8 +98,8 @@ Actions
 Result: after every add, delete or drag, the optimistic update is shown for a moment, then the whole `KanbanBoard` (including the chat sidebar) unmounts, the loading screen flashes, and the board remounts. Any unsent text in the chat textarea and the scroll position are lost.
 
 Actions
-- [ ] Only show the loading view on the initial load: change the condition to `if (!board)`, or keep `isLoading` for the first fetch and do silent refreshes afterwards.
-- [ ] Add a unit test that drafts a chat message, adds a card, and asserts the draft is still in the textarea.
+- [x] Only show the loading view on the initial load: change the condition to `if (!board)`, or keep `isLoading` for the first fetch and do silent refreshes afterwards.
+- [x] Add a unit test that drafts a chat message, adds a card, and asserts the draft is still in the textarea.
 
 ---
 
@@ -85,8 +110,8 @@ Actions
 `frontend/src/components/KanbanColumn.tsx:50` calls `onRename` on every `onChange`, and `page.tsx:94-107` sends a PATCH for each call. Typing a 12-character title sends 12 requests that can complete out of order. Clearing the field sends `title: ""`, which fails `ColumnUpdate`'s `min_length=1` (422); the error handler then calls `refreshBoard()`, which (because of 1.3) unmounts the board and restores the old title mid-edit.
 
 Actions
-- [ ] Keep the local optimistic update on change, but persist on blur and on Enter only.
-- [ ] Skip the request when the trimmed title is empty or unchanged; restore the previous title on blur if empty.
+- [x] Keep the local optimistic update on change, but persist on blur and on Enter only.
+- [x] Skip the request when the trimmed title is empty or unchanged; restore the previous title on blur if empty.
 
 ### 2.2 Malformed AI output causes HTTP 500 (Confirmed)
 
@@ -107,32 +132,32 @@ Causes:
 Because the connection is closed without commit, no partial changes are persisted, which is good. But the user only sees "Something went wrong" and the model's reply is lost.
 
 Actions
-- [ ] Parse ids with a small helper that returns `None` for non-digit strings, and `continue` on `None`, so bad targets are skipped as documented.
-- [ ] Catch `ValidationError` in `parse_structured_output` and raise `HTTPException(502, "OpenRouter returned an invalid response")`. Do the same for `response.json()` decoding.
-- [ ] Add unit tests for each row in the table above.
+- [x] Parse ids with a small helper that returns `None` for non-digit strings, and `continue` on `None`, so bad targets are skipped as documented.
+- [x] Catch `ValidationError` in `parse_structured_output` and raise `HTTPException(502, "OpenRouter returned an invalid response")`. Do the same for `response.json()` decoding.
+- [x] Add unit tests for each row in the table above.
 
 ### 2.3 Cards cannot be edited in the UI (requirement gap)
 
 `AGENTS.md` business requirements: "The cards on the Kanban board can be moved with drag and drop, and edited". `KanbanCard.tsx` only offers "Remove". `PATCH /api/cards/{id}` and `api.updateCard` already support `title` and `details`, so only the UI is missing. Today only the AI can edit cards.
 
 Actions
-- [ ] Add inline editing to `KanbanCard` (for example, click title/details to edit, save on blur/Enter) wired through a new `onEditCard` handler in `page.tsx` that calls `updateCard`.
-- [ ] Unit test plus one Playwright test for editing a card.
+- [x] Add inline editing to `KanbanCard` (for example, click title/details to edit, save on blur/Enter) wired through a new `onEditCard` handler in `page.tsx` that calls `updateCard`.
+- [x] Unit test plus one Playwright test for editing a card.
 
 ### 2.4 Side effect inside a state updater
 
 `frontend/src/components/KanbanBoard.tsx:107-114` calls `onMoveCard(...)` (which sends a PATCH) from inside the `setBoard` updater function. Updaters must be pure; React StrictMode (on by default in the App Router) invokes them twice in development, so each drag sends two PATCH requests under `npm run dev`.
 
 Actions
-- [ ] Compute `nextColumns = moveCard(board.columns, activeId, overId)` from the current `board` prop, call `setBoard({...board, columns: nextColumns})`, then call `onMoveCard` outside the updater.
+- [x] Compute `nextColumns = moveCard(board.columns, activeId, overId)` from the current `board` prop, call `setBoard({...board, columns: nextColumns})`, then call `onMoveCard` outside the updater.
 
 ### 2.5 JSON output is not enforced at the model level
 
 `ai.py:49-53` relies on the system prompt alone to get JSON, plus a brace-extraction fallback (`ai.py:28-40`). OpenRouter supports `response_format` with a JSON schema for models/providers that accept it, which removes most of the failure cases in 2.2 at the source.
 
 Actions
-- [ ] Send `response_format: {"type": "json_schema", "json_schema": {...}}` built from `StructuredChatOutput.model_json_schema()` (or the existing `docs/ai-structured-output.json`). Keep the fallback parser for providers that ignore it.
-- [ ] Verify with the live integration test that `openai/gpt-oss-120b` on OpenRouter honours it.
+- [x] Send `response_format: {"type": "json_schema", "json_schema": {...}}` built from `StructuredChatOutput.model_json_schema()` (or the existing `docs/ai-structured-output.json`). Keep the fallback parser for providers that ignore it.
+- [ ] Verify with the live integration test that `openai/gpt-oss-120b` on OpenRouter honours it. Blocked: the OpenRouter account returns 402 "Insufficient credits" for every request.
 
 ### 2.6 Duplicated board mutation logic
 
@@ -145,15 +170,15 @@ The same logic is written out several times:
 The two move implementations are already identical by copy, so a future fix to one will silently miss the other.
 
 Actions
-- [ ] Move these into `database.py` as plain functions (`get_owned_card`, `insert_card`, `move_card`, `delete_card`, `clamp_position`), each following the existing `resequence_positions()` pattern.
-- [ ] Have both `routes/board.py` and `apply_actions()` call them. Existing tests should pass unchanged.
+- [x] Move these into `database.py` as plain functions (`get_owned_card`, `insert_card`, `move_card`, `delete_card`, `clamp_position`), each following the existing `resequence_positions()` pattern.
+- [x] Have both `routes/board.py` and `apply_actions()` call them. Existing tests should pass unchanged.
 
 ### 2.7 Node 20 is end-of-life
 
 `Dockerfile:1` uses `node:20-slim`. Node 20 reached end-of-life in April 2026, and `@types/node` is pinned to `^20` in `frontend/package.json`.
 
 Actions
-- [ ] Switch to `node:24-slim` (current LTS) and bump `@types/node` to match. Rebuild and run `npm run test:all`.
+- [x] Switch to `node:24-slim` (current LTS) and bump `@types/node` to match. Rebuild and run `npm run test:all`.
 
 ---
 

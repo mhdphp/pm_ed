@@ -27,7 +27,6 @@ export default function Home() {
   const [board, setBoard] = useState<BoardData | null>(null);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [username, setUsername] = useState<string>(CREDENTIALS.username);
-  const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [boardError, setBoardError] = useState<string | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -35,16 +34,12 @@ export default function Home() {
   const [isChatSending, setIsChatSending] = useState(false);
 
   const refreshBoard = useCallback(async () => {
-    setIsLoading(true);
-    setBoardError(null);
     try {
       const payload = await fetchBoard(username);
       setBoard(toBoardData(payload));
     } catch (err) {
       if (process.env.NODE_ENV === "development") console.error(err);
       setBoardError("Unable to load the board from the server.");
-    } finally {
-      setIsLoading(false);
     }
   }, [username]);
 
@@ -92,6 +87,7 @@ export default function Home() {
   }, [isAuthenticated, refreshBoard]);
 
   const handleRenameColumn = async (columnId: string, title: string) => {
+    setBoardError(null);
     const columnIdNumber = Number(fromColumnId(columnId));
     if (Number.isNaN(columnIdNumber)) {
       setBoardError("Unable to save column changes.");
@@ -107,6 +103,7 @@ export default function Home() {
   };
 
   const handleAddCard = async (columnId: string, title: string, details: string) => {
+    setBoardError(null);
     const columnIdNumber = Number(fromColumnId(columnId));
     if (Number.isNaN(columnIdNumber)) {
       setBoardError("Unable to add the card.");
@@ -129,7 +126,24 @@ export default function Home() {
     }
   };
 
+  const handleEditCard = async (cardId: string, title: string, details: string) => {
+    setBoardError(null);
+    const cardIdNumber = Number(fromCardId(cardId));
+    if (Number.isNaN(cardIdNumber)) {
+      setBoardError("Unable to save card changes.");
+      return;
+    }
+    try {
+      await updateCard(cardIdNumber, { title, details }, username);
+    } catch (err) {
+      if (process.env.NODE_ENV === "development") console.error(err);
+      setBoardError("Unable to save card changes.");
+      refreshBoard();
+    }
+  };
+
   const handleDeleteCard = async (columnId: string, cardId: string) => {
+    setBoardError(null);
     const cardIdNumber = Number(fromCardId(cardId));
     if (Number.isNaN(cardIdNumber)) {
       return;
@@ -149,6 +163,7 @@ export default function Home() {
     _overId: string,
     nextColumns: BoardData["columns"]
   ) => {
+    setBoardError(null);
     const location = findCardLocation(nextColumns, activeId);
     if (!location) {
       return;
@@ -287,7 +302,7 @@ export default function Home() {
     );
   }
 
-  if (isLoading || !board) {
+  if (!board) {
     return (
       <div className="relative min-h-screen overflow-hidden">
         <div className="pointer-events-none absolute left-0 top-0 h-[420px] w-[420px] -translate-x-1/3 -translate-y-1/3 rounded-full bg-[radial-gradient(circle,_rgba(32,157,215,0.25)_0%,_rgba(32,157,215,0.05)_55%,_transparent_70%)]" />
@@ -297,7 +312,7 @@ export default function Home() {
               Loading your board
             </h1>
             <p className="mt-3 text-sm text-[var(--gray-text)]">
-              Fetching the latest updates from the server.
+              {boardError ?? "Fetching the latest updates from the server."}
             </p>
           </section>
         </main>
@@ -320,6 +335,7 @@ export default function Home() {
         onLogout={handleLogout}
         onRenameColumn={handleRenameColumn}
         onAddCard={handleAddCard}
+        onEditCard={handleEditCard}
         onDeleteCard={handleDeleteCard}
         onMoveCard={handleMoveCard}
         sidebar={(

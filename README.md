@@ -8,6 +8,8 @@
 
 The backend will be available at http://localhost:8000
 
+Board data is stored in the Docker volume `pm-data` and survives restarts. To reset it, stop the container and run `docker volume rm pm-data`.
+
 ## Stop container
 
 - Mac: scripts/stop-mac.sh

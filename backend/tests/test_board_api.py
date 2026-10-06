@@ -83,3 +83,40 @@ def test_delete_column_removes_cards(tmp_path: Path) -> None:
     assert column_id not in {column["id"] for column in updated["columns"]}
     for card_id in card_ids:
         assert card_id not in updated["cards"]
+
+
+def test_reorder_card_within_column(tmp_path: Path) -> None:
+    client = _make_client(tmp_path)
+    column = client.get("/api/board").json()["columns"][0]
+    for title in ["Third", "Fourth"]:
+        client.post("/api/cards", json={"column_id": int(column["id"]), "title": title})
+    ids = client.get("/api/board").json()["columns"][0]["cardIds"]
+
+    move = client.patch(
+        f"/api/cards/{ids[0]}",
+        json={"column_id": int(column["id"]), "position": len(ids) - 1},
+    )
+    assert move.status_code == 200
+
+    updated = client.get("/api/board").json()["columns"][0]["cardIds"]
+    assert updated == ids[1:] + ids[:1]
+
+
+def test_edit_card_title_and_details(tmp_path: Path) -> None:
+    client = _make_client(tmp_path)
+    card_id = client.get("/api/board").json()["columns"][0]["cardIds"][0]
+
+    edit = client.patch(f"/api/cards/{card_id}", json={"title": "Edited", "details": "New details"})
+    assert edit.status_code == 200
+
+    card = client.get("/api/board").json()["cards"][card_id]
+    assert card["title"] == "Edited"
+    assert card["details"] == "New details"
+
+
+def test_card_and_column_not_found(tmp_path: Path) -> None:
+    client = _make_client(tmp_path)
+    assert client.patch("/api/cards/9999", json={"title": "x"}).status_code == 404
+    assert client.delete("/api/cards/9999").status_code == 404
+    assert client.patch("/api/columns/9999", json={"title": "x"}).status_code == 404
+    assert client.post("/api/cards", json={"column_id": 9999, "title": "x"}).status_code == 404

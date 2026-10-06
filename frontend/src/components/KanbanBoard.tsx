@@ -25,6 +25,7 @@ type KanbanBoardProps = {
   onLogout?: () => void;
   onRenameColumn?: (columnId: string, title: string) => void;
   onAddCard?: (columnId: string, title: string, details: string) => void;
+  onEditCard?: (cardId: string, title: string, details: string) => void;
   onDeleteCard?: (columnId: string, cardId: string) => void;
   onMoveCard?: (activeId: string, overId: string, nextColumns: Column[]) => void;
   sidebar?: ReactNode;
@@ -36,6 +37,7 @@ export const KanbanBoard = ({
   onLogout,
   onRenameColumn,
   onAddCard,
+  onEditCard,
   onDeleteCard,
   onMoveCard,
   sidebar,
@@ -102,16 +104,9 @@ export const KanbanBoard = ({
       return;
     }
 
-    const overId = resolvedOverId;
-
-    setBoard((prev) => {
-      const nextColumns = moveCard(prev.columns, activeId, overId);
-      onMoveCard?.(activeId, overId, nextColumns);
-      return {
-        ...prev,
-        columns: nextColumns,
-      };
-    });
+    const nextColumns = moveCard(board.columns, activeId, resolvedOverId);
+    setBoard({ ...board, columns: nextColumns });
+    onMoveCard?.(activeId, resolvedOverId, nextColumns);
 
     lastOverId.current = null;
   };
@@ -157,6 +152,14 @@ export const KanbanBoard = ({
           : column
       ),
     }));
+  };
+
+  const handleEditCard = (cardId: string, title: string, details: string) => {
+    setBoard((prev) => ({
+      ...prev,
+      cards: { ...prev.cards, [cardId]: { ...prev.cards[cardId], title, details } },
+    }));
+    onEditCard?.(cardId, title, details);
   };
 
   const handleDeleteCard = (columnId: string, cardId: string) => {
@@ -251,6 +254,7 @@ export const KanbanBoard = ({
                   cards={column.cardIds.map((cardId) => board.cards[cardId])}
                   onRename={handleRenameColumn}
                   onAddCard={handleAddCard}
+                  onEditCard={handleEditCard}
                   onDeleteCard={handleDeleteCard}
                 />
               ))}

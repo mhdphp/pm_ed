@@ -3,6 +3,7 @@ import sqlite3
 
 import httpx
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 from app.config import (
     OPENROUTER_BASE_URL,
@@ -10,7 +11,15 @@ from app.config import (
     OPENROUTER_TEMPERATURE,
     get_openrouter_api_key,
 )
-from app.database import get_or_create_board, ordered_ids, resequence_positions
+from app.database import (
+    delete_card,
+    get_or_create_board,
+    get_owned_card,
+    get_owned_column,
+    insert_card,
+    move_card,
+    update_card_fields,
+)
 from app.models import (
     ChatHistoryItem,
     CreateCardAction,
@@ -20,6 +29,15 @@ from app.models import (
     UpdateCardAction,
     ChatAction,
 )
+
+RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "kanban_ai_response",
+        "strict": False,
+        "schema": StructuredChatOutput.model_json_schema(),
+    },
+}
 
 
 def parse_structured_output(content: str) -> StructuredChatOutput:
@@ -38,7 +56,12 @@ def parse_structured_output(content: str) -> StructuredChatOutput:
                 ) from inner_exc
         else:
             raise HTTPException(status_code=502, detail="OpenRouter returned invalid JSON") from exc
-    return StructuredChatOutput.model_validate(data)
+    try:
+        return StructuredChatOutput.model_validate(data)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=502, detail="OpenRouter returned an invalid response"
+        ) from exc
 
 
 def call_openrouter(messages: list[dict[str, str]]) -> tuple[str, str | None]:
@@ -50,6 +73,7 @@ def call_openrouter(messages: list[dict[str, str]]) -> tuple[str, str | None]:
         "model": OPENROUTER_MODEL,
         "messages": messages,
         "temperature": OPENROUTER_TEMPERATURE,
+        "response_format": RESPONSE_FORMAT,
     }
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -69,7 +93,10 @@ def call_openrouter(messages: list[dict[str, str]]) -> tuple[str, str | None]:
     if response.status_code >= 400:
         raise HTTPException(status_code=502, detail="OpenRouter returned an error")
 
-    data = response.json()
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="OpenRouter returned invalid JSON") from exc
     choices = data.get("choices", [])
     if not choices:
         raise HTTPException(status_code=502, detail="OpenRouter response missing choices")
@@ -125,6 +152,10 @@ def build_structured_messages(
     return messages_list
 
 
+def _parse_id(value: str) -> int | None:
+    return int(value) if value.isdigit() else None
+
+
 def apply_actions(
     conn: sqlite3.Connection, user_id: int, actions: list[ChatAction]
 ) -> None:
@@ -132,129 +163,25 @@ def apply_actions(
 
     for action in actions:
         if isinstance(action, CreateCardAction):
-            column = conn.execute(
-                "SELECT id FROM columns WHERE id = ? AND board_id = ?",
-                (int(action.columnId), board_id),
-            ).fetchone()
-            if not column:
+            column_id = _parse_id(action.columnId)
+            if column_id is None or not get_owned_column(conn, column_id, board_id):
                 continue
+            insert_card(conn, column_id, action.title, action.details, action.position)
+            continue
 
-            cards = conn.execute(
-                "SELECT id FROM cards WHERE column_id = ? AND archived = 0 ORDER BY position",
-                (int(action.columnId),),
-            ).fetchall()
-            ids = ordered_ids(cards)
-
-            insert_position = action.position
-            if insert_position is None or insert_position > len(ids):
-                insert_position = len(ids)
-            if insert_position < 0:
-                insert_position = 0
-
-            cursor = conn.execute(
-                "INSERT INTO cards (column_id, title, details, position) VALUES (?, ?, ?, ?)",
-                (int(action.columnId), action.title, action.details, insert_position),
-            )
-            card_id = int(cursor.lastrowid)
-            ids.insert(insert_position, card_id)
-            resequence_positions(conn, "cards", ids, "AND column_id = ?", (int(action.columnId),))
+        card_id = _parse_id(action.cardId)
+        card = get_owned_card(conn, card_id, board_id) if card_id is not None else None
+        if not card:
             continue
 
         if isinstance(action, UpdateCardAction):
-            card_row = conn.execute(
-                """
-                SELECT cards.id
-                FROM cards
-                JOIN columns ON cards.column_id = columns.id
-                WHERE cards.id = ? AND columns.board_id = ?
-                """,
-                (int(action.cardId), board_id),
-            ).fetchone()
-            if not card_row:
+            update_card_fields(conn, card_id, action.title, action.details)
+        elif isinstance(action, MoveCardAction):
+            target_column_id = _parse_id(action.columnId)
+            if target_column_id is None or not get_owned_column(conn, target_column_id, board_id):
                 continue
-            if action.title is not None:
-                conn.execute(
-                    "UPDATE cards SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                    (action.title, int(action.cardId)),
-                )
-            if action.details is not None:
-                conn.execute(
-                    "UPDATE cards SET details = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                    (action.details, int(action.cardId)),
-                )
-            continue
-
-        if isinstance(action, MoveCardAction):
-            card = conn.execute(
-                """
-                SELECT cards.id, cards.column_id
-                FROM cards
-                JOIN columns ON cards.column_id = columns.id
-                WHERE cards.id = ? AND columns.board_id = ?
-                """,
-                (int(action.cardId), board_id),
-            ).fetchone()
-            if not card:
-                continue
-
-            target_column = conn.execute(
-                "SELECT id FROM columns WHERE id = ? AND board_id = ?",
-                (int(action.columnId), board_id),
-            ).fetchone()
-            if not target_column:
-                continue
-
-            current_column_id = int(card["column_id"])
-            target_column_id = int(action.columnId)
-
-            source_cards = conn.execute(
-                "SELECT id FROM cards WHERE column_id = ? AND archived = 0 ORDER BY position",
-                (current_column_id,),
-            ).fetchall()
-            source_ids = ordered_ids(source_cards)
-            if int(action.cardId) in source_ids:
-                source_ids.remove(int(action.cardId))
-
-            target_cards = conn.execute(
-                "SELECT id FROM cards WHERE column_id = ? AND archived = 0 ORDER BY position",
-                (target_column_id,),
-            ).fetchall()
-            target_ids = ordered_ids(target_cards)
-
-            insert_position = action.position
-            if insert_position is None or insert_position > len(target_ids):
-                insert_position = len(target_ids)
-            if insert_position < 0:
-                insert_position = 0
-
-            target_ids.insert(insert_position, int(action.cardId))
-
-            conn.execute(
-                "UPDATE cards SET column_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (target_column_id, int(action.cardId)),
-            )
-            resequence_positions(conn, "cards", source_ids, "AND column_id = ?", (current_column_id,))
-            resequence_positions(conn, "cards", target_ids, "AND column_id = ?", (target_column_id,))
-            continue
-
-        if isinstance(action, DeleteCardAction):
-            card = conn.execute(
-                """
-                SELECT cards.id, cards.column_id
-                FROM cards
-                JOIN columns ON cards.column_id = columns.id
-                WHERE cards.id = ? AND columns.board_id = ?
-                """,
-                (int(action.cardId), board_id),
-            ).fetchone()
-            if not card:
-                continue
-            column_id = int(card["column_id"])
-            conn.execute("DELETE FROM cards WHERE id = ?", (int(action.cardId),))
-            remaining = conn.execute(
-                "SELECT id FROM cards WHERE column_id = ? AND archived = 0 ORDER BY position",
-                (column_id,),
-            ).fetchall()
-            resequence_positions(conn, "cards", ordered_ids(remaining), "AND column_id = ?", (column_id,))
+            move_card(conn, card_id, int(card["column_id"]), target_column_id, action.position)
+        elif isinstance(action, DeleteCardAction):
+            delete_card(conn, card_id, int(card["column_id"]))
 
     conn.commit()

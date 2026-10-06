@@ -8,4 +8,4 @@ docker build -t $imageName $rootDir
 
 docker rm -f $appName *>$null
 
-docker run --name $appName --env-file "$rootDir\.env" -p 8000:8000 $imageName
+docker run --name $appName --env-file "$rootDir\.env" -v pm-data:/app/backend/data -p 8000:8000 $imageName

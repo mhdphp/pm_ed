@@ -41,16 +41,19 @@ def root():
 
 @router.get("/{full_path:path}", include_in_schema=False)
 def static_fallback(full_path: str):
-    if not STATIC_DIR:
+    if not STATIC_DIR or full_path.startswith("api/"):
         return HTMLResponse("Not found", status_code=404)
 
-    requested_path = STATIC_DIR / full_path
+    requested_path = (STATIC_DIR / full_path).resolve()
+    if not requested_path.is_relative_to(STATIC_DIR.resolve()):
+        return HTMLResponse("Not found", status_code=404)
+
     if requested_path.is_dir():
         index_path = requested_path / "index.html"
         if index_path.exists():
             return FileResponse(index_path)
 
-    if requested_path.exists():
+    if requested_path.is_file():
         return FileResponse(requested_path)
 
     index_path = STATIC_DIR / "index.html"

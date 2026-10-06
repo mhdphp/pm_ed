@@ -67,3 +67,30 @@ def test_chat_applies_actions(monkeypatch, tmp_path: Path) -> None:
 
     updated_board = payload["board"]
     assert any(card["title"] == "AI created" for card in updated_board["cards"].values())
+
+
+def test_chat_returns_502_for_invalid_model_output(monkeypatch, tmp_path: Path) -> None:
+    client = _make_client(tmp_path)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr(
+        ai_module.httpx, "post", lambda *_a, **_k: _DummyResponse('{"actions": []}')
+    )
+
+    response = client.post("/api/chat", json={"message": "Hi"})
+    assert response.status_code == 502
+
+
+def test_chat_requests_json_schema_output(monkeypatch, tmp_path: Path) -> None:
+    client = _make_client(tmp_path)
+    captured = {}
+
+    def _mock_post(*_args, **kwargs):
+        captured.update(kwargs["json"])
+        return _DummyResponse('{"reply": "Hi", "actions": []}')
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr(ai_module.httpx, "post", _mock_post)
+
+    response = client.post("/api/chat", json={"message": "Hi"})
+    assert response.status_code == 200
+    assert captured["response_format"]["type"] == "json_schema"

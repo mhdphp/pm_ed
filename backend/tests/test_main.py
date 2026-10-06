@@ -115,3 +115,31 @@ def test_static_fallback_404_without_index(tmp_path) -> None:
     response = client.get("/no-index")
     assert response.status_code == 404
     static_module.STATIC_DIR = original_static_dir
+
+
+def test_static_fallback_blocks_path_traversal(tmp_path) -> None:
+    original_static_dir = static_module.STATIC_DIR
+    static_dir = tmp_path / "out"
+    static_dir.mkdir()
+    (static_dir / "index.html").write_text("Index content")
+    (tmp_path / "secret.txt").write_text("SECRET")
+
+    static_module.STATIC_DIR = static_dir
+    try:
+        response = client.get("/..%2Fsecret.txt")
+        assert response.status_code == 404
+        assert "SECRET" not in response.text
+    finally:
+        static_module.STATIC_DIR = original_static_dir
+
+
+def test_static_fallback_404_for_unknown_api_path(tmp_path) -> None:
+    original_static_dir = static_module.STATIC_DIR
+    (tmp_path / "index.html").write_text("Index content")
+
+    static_module.STATIC_DIR = tmp_path
+    try:
+        response = client.get("/api/does-not-exist")
+        assert response.status_code == 404
+    finally:
+        static_module.STATIC_DIR = original_static_dir

@@ -19,7 +19,7 @@ scripts/stop-mac.sh  | scripts/stop-linux.sh  | scripts/stop-windows.ps1
 ```
 App served at http://localhost:8000. For running tests against a live container, start it detached instead:
 ```bash
-docker build -t pm-app . && docker rm -f pm-app; docker run -d --name pm-app --env-file .env -p 8000:8000 pm-app
+docker build -t pm-app . && docker rm -f pm-app; docker run -d --name pm-app --env-file .env -v pm-data:/app/backend/data -p 8000:8000 pm-app
 curl -sf http://127.0.0.1:8000/health   # wait for readiness
 ```
 
@@ -59,9 +59,9 @@ Unit tests isolate the DB by setting `PM_DB_PATH` to a tmp file and calling `ini
 
 **User scoping:** Auth is frontend-only. The backend identifies the user via the `X-User` header (defaults to `user`), and every query is scoped by joining through `columns.board_id` to that user's board.
 
-**Ordering:** Columns and cards have an integer `position`. Every insert/move/delete rebuilds the ordered id list in Python and calls `resequence_positions()` to rewrite positions 0..n. Follow this pattern rather than doing position arithmetic in SQL.
+**Ordering:** Columns and cards have an integer `position`. Every insert/move/delete rebuilds the ordered id list in Python and calls `resequence_positions()` to rewrite positions 0..n. Card mutations go through the shared helpers in `database.py` (`insert_card`, `move_card`, `delete_card`, `update_card_fields`, `get_owned_card`/`get_owned_column`), used by both `routes/board.py` and `apply_actions()`.
 
-**AI chat (`/api/chat`):** Sends the current board JSON + conversation history to OpenRouter with a system prompt requiring JSON `{"reply", "actions"}`. The response is parsed (with a fallback that extracts the outermost `{...}`), validated against `StructuredChatOutput`, applied via `apply_actions()` when `apply_updates` is true, and returned with the refreshed board. Invalid action targets are silently skipped. Schema doc: `docs/ai-structured-output.json`.
+**AI chat (`/api/chat`):** Sends the current board JSON + conversation history to OpenRouter with a system prompt requiring JSON `{"reply", "actions"}`. The response is parsed (with a fallback that extracts the outermost `{...}`), validated against `StructuredChatOutput`, applied via `apply_actions()` when `apply_updates` is true, and returned with the refreshed board. Invalid action targets (non-numeric or not on the user's board) are silently skipped; output that fails schema validation returns 502. The request also sends `response_format` with the `StructuredChatOutput` JSON schema. Schema doc: `docs/ai-structured-output.json`.
 
 **Frontend (`frontend/src/`):**
 - `app/page.tsx` - the stateful container: login (credentials checked client-side), `board` and chat state, and all API-calling handlers (rename, add/delete/move card, send chat). The board returned by `/api/chat` replaces `board` state.

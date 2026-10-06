@@ -1,5 +1,5 @@
 import sqlite3
-from typing import Generator, Iterable, Literal
+from typing import Iterable, Literal
 
 from app.config import DEFAULT_BOARD_TITLE, INITIAL_COLUMNS, get_db_path
 
@@ -73,14 +73,6 @@ def init_db() -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cards_column_id ON cards(column_id)")
     conn.commit()
     conn.close()
-
-
-def get_db() -> Generator[sqlite3.Connection, None, None]:
-    conn = connect_db()
-    try:
-        yield conn
-    finally:
-        conn.close()
 
 
 def get_or_create_user(conn: sqlite3.Connection, username: str) -> int:
@@ -200,3 +192,97 @@ def resequence_positions(
             f"UPDATE {table} SET position = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? {extra_where}",
             (index, item_id, *extra_params),
         )
+
+
+def clamp_position(position: int | None, length: int) -> int:
+    if position is None:
+        return length
+    return max(0, min(position, length))
+
+
+def get_owned_column(conn: sqlite3.Connection, column_id: int, board_id: int) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT id FROM columns WHERE id = ? AND board_id = ?",
+        (column_id, board_id),
+    ).fetchone()
+
+
+def get_owned_card(conn: sqlite3.Connection, card_id: int, board_id: int) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT cards.id, cards.column_id
+        FROM cards
+        JOIN columns ON cards.column_id = columns.id
+        WHERE cards.id = ? AND columns.board_id = ?
+        """,
+        (card_id, board_id),
+    ).fetchone()
+
+
+def column_card_ids(conn: sqlite3.Connection, column_id: int) -> list[int]:
+    rows = conn.execute(
+        "SELECT id FROM cards WHERE column_id = ? AND archived = 0 ORDER BY position",
+        (column_id,),
+    ).fetchall()
+    return ordered_ids(rows)
+
+
+def insert_card(
+    conn: sqlite3.Connection, column_id: int, title: str, details: str, position: int | None
+) -> int:
+    ids = column_card_ids(conn, column_id)
+    insert_position = clamp_position(position, len(ids))
+    cursor = conn.execute(
+        "INSERT INTO cards (column_id, title, details, position) VALUES (?, ?, ?, ?)",
+        (column_id, title, details, insert_position),
+    )
+    card_id = int(cursor.lastrowid)
+    ids.insert(insert_position, card_id)
+    resequence_positions(conn, "cards", ids, "AND column_id = ?", (column_id,))
+    return card_id
+
+
+def update_card_fields(
+    conn: sqlite3.Connection, card_id: int, title: str | None, details: str | None
+) -> None:
+    if title is not None:
+        conn.execute(
+            "UPDATE cards SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (title, card_id),
+        )
+    if details is not None:
+        conn.execute(
+            "UPDATE cards SET details = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (details, card_id),
+        )
+
+
+def move_card(
+    conn: sqlite3.Connection,
+    card_id: int,
+    source_column_id: int,
+    target_column_id: int,
+    position: int | None,
+) -> None:
+    source_ids = column_card_ids(conn, source_column_id)
+    source_ids.remove(card_id)
+    if target_column_id == source_column_id:
+        target_ids = source_ids
+    else:
+        target_ids = column_card_ids(conn, target_column_id)
+    target_ids.insert(clamp_position(position, len(target_ids)), card_id)
+
+    conn.execute(
+        "UPDATE cards SET column_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (target_column_id, card_id),
+    )
+    if target_column_id != source_column_id:
+        resequence_positions(conn, "cards", source_ids, "AND column_id = ?", (source_column_id,))
+    resequence_positions(conn, "cards", target_ids, "AND column_id = ?", (target_column_id,))
+
+
+def delete_card(conn: sqlite3.Connection, card_id: int, column_id: int) -> None:
+    conn.execute("DELETE FROM cards WHERE id = ?", (card_id,))
+    resequence_positions(
+        conn, "cards", column_card_ids(conn, column_id), "AND column_id = ?", (column_id,)
+    )
