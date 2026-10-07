@@ -2,6 +2,8 @@
 
 A Kanban board web app with an AI chat assistant. Sign in, manage cards with drag-and-drop, and ask the assistant to create, edit, move, or delete cards for you.
 
+This project is part of the course "AI Coder: Complete Claude Code & Coding Agents Course" by instructor Ed Donner.
+
 - Frontend: Next.js 16 (static export), React 19, TypeScript, Tailwind CSS v4, dnd-kit
 - Backend: Python 3.12, FastAPI, SQLite
 - AI: OpenRouter, model `openai/gpt-oss-120b`
